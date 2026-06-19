@@ -1,0 +1,40 @@
+.leaflet-control-measure {
+	font-size: 16px;
+	font-weight: bold;
+	line-height: 21px;
+	}
+
+.leaflet-bar-part-top-and-bottom {
+	-webkit-border-radius: 4px 4px 4px 4px;
+	        border-radius: 4px 4px 4px 4px;
+	border-bottom: none;
+	}
+
+.leaflet-touch .leaflet-bar-part-top-and-bottom {
+	-webkit-border-radius: 7px 7px 7px 7px;
+	        border-radius: 7px 7px 7px 7px;
+	border-bottom: none;
+	}
+
+.leaflet-control-measure-on .leaflet-control-measure {
+	    background-color: #fffb00;
+	}
+
+.leaflet-measure-tooltip {
+    font: 10px/1.25 Arial, Helvetica, sans-serif;
+    text-shadow: 2px 0 0 #fffb00, -2px 0 0 #fffb00, 0 2px 0 #fffb00, 0 -2px 0 #fffb00, 1px 1px #fffb00, -1px -1px 0 #fffb00, 1px -1px 0 #fffb00, -1px 1px 0 #fffb00;
+    margin: 0;
+    padding: 2px;
+    width: auto !important;
+    height: auto !important;
+    white-space: nowrap;
+	}
+
+.leaflet-measure-tooltip-total {
+	font-weight: bold;
+	font-size: 12px;
+	}
+
+.leaflet-measure-tooltip-difference {
+	color: #777;
+	}
