@@ -1,7 +1,0 @@
-@font-face {
-  font-family: 'Piazzolla';
-  font-style: normal;
-  font-weight: 800;
-  font-display: swap;
-  src: url(https://fonts.gstatic.com/l/font?kit=N0b52SlTPu5rIkWIZjVKKtYtfxYqZ4RJBFzFfYUjkSDdlqZgy7JYwXL3zBz30YZoLkKyusQGwHl3FIrg80zCIr3G62Ll&skey=22c66182f7523afd&v=v40) format('woff2');
-}
