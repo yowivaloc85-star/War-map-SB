@@ -3057,7 +3057,7 @@ window.addEventListener('keydown', function (e) {
   // ── Экспорт / импорт резервной копии ─────────────────────
   const WM_BACKUP_KEYS = ['wm_cities','wm_terrain','wm_roads','wm_tiles','wm_label_offsets',
     'wm_troops','wm_battles','wm_biome_edits','wm_war_econ','wm_war_rates',
-    'wm_war_passwords','wm_war_actions','wm_war_logins','wm_war_factions'];
+    'wm_war_passwords','wm_war_actions','wm_war_logins','wm_war_factions','wm_place_owners'];
 
   document.getElementById('admin-export').addEventListener('click', () => {
     const data = { _exported: new Date().toISOString(), _version: 2 };
@@ -4111,17 +4111,29 @@ window.addEventListener('keydown', function (e) {
   var fxEditing = null;      // fid раскрытой строки
   var fxPickXY  = null;      // выбранная точка для восстания
 
-  // Лидеры: { "ник в нижнем регистре": fid | "admin" }
+  // Лидеры: { "ник в нижнем регистре": "fid" | "admin" | "admin,fid" | "fid1,fid2" }
+  // Один ник может держать несколько должностей — при входе он выбирает, за кого играть.
+  function rList(v) { return window.WarRoleList ? window.WarRoleList(v) : String(v||'').split(',').filter(Boolean); }
+  function rJoin(l) { return window.WarRoleJoin ? window.WarRoleJoin(l) : (l||[]).join(','); }
+  function hasRole(m, nick, role) { return rList(m[nick]).indexOf(role) >= 0; }
+  // Новая карта ролей: нику nick добавить/убрать роль role (пустой список — ник удаляется)
+  function withRole(m, nick, role, on) {
+    var out = Object.assign({}, m);
+    var l = rList(out[nick]).filter(function(r){ return r !== role; });
+    if (on) l.push(role);
+    if (l.length) out[nick] = rJoin(l); else delete out[nick];
+    return out;
+  }
   function leadersMap() { return window._leaders || {}; }
   function leaderNickFor(fid) {
     var m = leadersMap();
-    var hit = Object.keys(m).find(function(n){ return m[n] === fid; });
+    var hit = Object.keys(m).find(function(n){ return hasRole(m, n, fid); });
     return hit || '';
   }
   function deputiesMap() { return window._deputies || {}; }
   function deputiesFor(fid) {
     var m = deputiesMap();
-    return Object.keys(m).filter(function(n){ return m[n] === fid; });
+    return Object.keys(m).filter(function(n){ return hasRole(m, n, fid); });
   }
 
   function fxTileCount(fid)  { return (window.tilesData||[]).filter(function(t){ return t.owner===fid; }).length; }
@@ -4146,7 +4158,7 @@ window.addEventListener('keydown', function (e) {
     }
 
     // Администраторы
-    var admins = Object.keys(leadersMap()).filter(function(n){ return leadersMap()[n] === 'admin'; });
+    var admins = Object.keys(leadersMap()).filter(function(n){ return hasRole(leadersMap(), n, 'admin'); });
     var al = document.getElementById('fx-admin-list');
     if (al) {
       al.innerHTML = admins.length
@@ -4157,8 +4169,8 @@ window.addEventListener('keydown', function (e) {
         : '<span class="fx-hint">Пока никого — добавь свой ник.</span>';
       al.querySelectorAll('button').forEach(function(b){
         b.addEventListener('click', function(){
-          var m = Object.assign({}, leadersMap());
-          delete m[b.dataset.nick];
+          // снимаем только права администратора — лидерства ника остаются
+          var m = withRole(leadersMap(), b.dataset.nick, 'admin', false);
           if (window._saveLeaders) window._saveLeaders(m);
           renderFactionManager();
         });
@@ -4194,6 +4206,19 @@ window.addEventListener('keydown', function (e) {
         +     leaderNickFor(f.fid).replace(/"/g,'&quot;')+'">'
         +   '<button class="fx-leader-save abtn-ghost" title="Этот игрок сможет войти по /maplogin">👤 Назначить</button>'
         + '</div>'
+        + (function(){
+            var ln = leaderNickFor(f.fid);
+            var other = ln ? rList(leadersMap()[ln]).filter(function(r){ return r !== f.fid; })
+                              .concat(rList(deputiesMap()[ln]).map(function(r){ return 'зам:' + r; })) : [];
+            if (!other.length) return '';
+            var names = other.map(function(r){
+              var dep = r.indexOf('зам:') === 0, id = dep ? r.slice(4) : r;
+              var lbl = id === 'admin' ? 'администратор' : (((window.FACTION_META||{})[id]||{}).label || id);
+              return dep ? lbl + ' (зам.)' : lbl;
+            });
+            return '<div class="fx-hint" style="margin:-2px 0 8px">У этого ника есть и другие должности: <b>'
+                 + names.join(', ') + '</b>. При входе он выбирает, за кого играть.</div>';
+          })()
         + '<div class="fx-edit-row fx-leader-row">'
         +   '<input class="fx-e-dep" placeholder="Ник заместителя">'
         +   '<button class="fx-dep-add abtn-ghost" title="Полномочия как у лидера">＋ Заместитель</button>'
@@ -4260,12 +4285,12 @@ window.addEventListener('keydown', function (e) {
       var lsave = box.querySelector('.fx-leader-save');
       if (lsave) lsave.addEventListener('click', function(){
         var nick = box.querySelector('.fx-e-nick').value.trim().toLowerCase();
-        var m = Object.assign({}, leadersMap());
-        Object.keys(m).forEach(function(n){ if (m[n] === fid) delete m[n]; });   // один лидер на фракцию
+        var m = leadersMap();
+        Object.keys(m).forEach(function(n){ if (hasRole(m, n, fid)) m = withRole(m, n, fid, false); });   // один лидер на фракцию
         if (nick) {
-          m[nick] = fid;
-          var d = Object.assign({}, deputiesMap());       // повышение: из замов в лидеры
-          if (d[nick] === fid) { delete d[nick]; if (window._saveDeputies) window._saveDeputies(d); }
+          m = withRole(m, nick, fid, true);               // прочие должности ника сохраняются
+          if (hasRole(deputiesMap(), nick, fid) && window._saveDeputies)   // повышение: из замов в лидеры
+            window._saveDeputies(withRole(deputiesMap(), nick, fid, false));
         }
         if (window._saveLeaders) window._saveLeaders(m);
         renderFactionManager();
@@ -4275,16 +4300,13 @@ window.addEventListener('keydown', function (e) {
         var nick = box.querySelector('.fx-e-dep').value.trim().toLowerCase();
         if (!nick) return;
         if (leaderNickFor(fid) === nick) { alert('Этот игрок уже лидер фракции.'); return; }
-        var m = Object.assign({}, deputiesMap());
-        m[nick] = fid;
-        if (window._saveDeputies) window._saveDeputies(m);
+        if (window._saveDeputies) window._saveDeputies(withRole(deputiesMap(), nick, fid, true));
         renderFactionManager();
       });
       box.querySelectorAll('.fx-dep-chip button').forEach(function(b){
         b.addEventListener('click', function(){
-          var m = Object.assign({}, deputiesMap());
-          delete m[b.dataset.nick];
-          if (window._saveDeputies) window._saveDeputies(m);
+          // снимаем заместительство только в ЭТОЙ фракции
+          if (window._saveDeputies) window._saveDeputies(withRole(deputiesMap(), b.dataset.nick, fid, false));
           renderFactionManager();
         });
       });
@@ -4297,9 +4319,7 @@ window.addEventListener('keydown', function (e) {
     var el = document.getElementById('fx-admin-nick');
     var nick = el.value.trim().toLowerCase();
     if (!nick) return;
-    var m = Object.assign({}, leadersMap());
-    m[nick] = 'admin';
-    if (window._saveLeaders) window._saveLeaders(m);
+    if (window._saveLeaders) window._saveLeaders(withRole(leadersMap(), nick, 'admin', true));
     el.value = '';
     renderFactionManager();
   });
@@ -5065,8 +5085,41 @@ namedRegions.forEach(id => {
       return t.owner===fid && t.points && t.points.length>=3 && pointInPolygon(x,y,t.points);
     });
   }
-  function canPlace(fid, x, y) {
+  // Города, переданные администратором другой фракции: { "city:<idx>": fid }
+  var _poRaw = null, _po = {};
+  function cityOwnerOverrides() {
+    var raw = null; try { raw = localStorage.getItem('wm_place_owners'); } catch(e) {}
+    if (raw !== _poRaw) { _poRaw = raw; try { _po = raw ? (JSON.parse(raw) || {}) : {}; } catch(e) { _po = {}; } }
+    return _po;
+  }
+  function cityOverride(idx) {
+    var fid = cityOwnerOverrides()['city:' + idx];
+    return (fid && FACTION_META[fid]) ? fid : null;
+  }
+  // Хозяин города: передача администратором > владелец тайла-замка, в котором город стоит.
+  // null — города нет ни в том, ни в другом: тогда решает регион, как раньше.
+  function cityHolder(idx, ignoreOverride) {
+    var ov = ignoreOverride ? null : cityOverride(idx);
+    if (ov) return ov;
+    var c = (window.citiesData||[])[idx]; if (!c) return null;
+    var t = (window.tilesData||[]).find(function(t){
+      return t.owner && FACTION_META[t.owner] && t.points && t.points.length >= 3 && pointInPolygon(c[1], c[2], t.points);
+    });
+    return t ? t.owner : null;
+  }
+  window.WarCityHolder = cityHolder;
+  // territoryOnly — только регион/тайлы/лагерь, без переданных городов (кто «по карте» хозяин)
+  function canPlace(fid, x, y, territoryOnly) {
     if (inRegion(fid, x, y) || ownedTileAt(fid, x, y)) return true;
+    // переданный (захваченный) город — земля нового хозяина в радиусе сбора
+    if (!territoryOnly) {
+      var ov = cityOwnerOverrides(), cs = window.citiesData || [];
+      for (var k in ov) {
+        if (ov[k] !== fid || k.indexOf('city:') !== 0) continue;
+        var c = cs[+k.slice(5)];
+        if (c && Math.hypot(x - c[1], y - c[2]) <= MUSTER_RADIUS) return true;
+      }
+    }
     // фракции без своего региона (созданные админом, восстания) — домашняя зона
     var meta = FACTION_META[fid];
     if (meta && meta.home) return Math.hypot(x - meta.home.x, y - meta.home.y) <= HOME_RADIUS;
@@ -5084,8 +5137,11 @@ namedRegions.forEach(id => {
   }
   function musterPoints(fid) {
     var pts = [];
-    (window.citiesData||[]).forEach(function(c){
-      if (canPlace(fid, c[1], c[2])) pts.push({ x:c[1], y:c[2], name:c[0], kind:'город' });
+    (window.citiesData||[]).forEach(function(c, i){
+      // переданный (или стоящий в чужом замке) город служит точкой сбора новому хозяину, а прежнему — уже нет
+      var holder = cityHolder(i);
+      if (holder ? holder === fid : canPlace(fid, c[1], c[2], true))
+        pts.push({ x:c[1], y:c[2], name:c[0], kind:'город' });
     });
     (window.tilesData||[]).forEach(function(t){
       if (t.owner !== fid || !t.points || t.points.length < 3) return;
@@ -5318,6 +5374,44 @@ namedRegions.forEach(id => {
     });
   }
   window.WarTroopInBattle = troopInBattle;
+  // Момент, с которого войско стоит: самая ранняя объявленная битва с его участием.
+  function battleFreezeTs(troopId) {
+    var ts = 0;
+    (window.battlesData||[]).forEach(function(b){
+      if (b.status !== 'declared') return;
+      if (b.defenderTroopId !== troopId && b.attackerTroopId !== troopId) return;
+      if (!ts || (b.ts && b.ts < ts)) ts = b.ts || 1;
+    });
+    return ts;
+  }
+
+  // ── Ночной запрет: с 00:00 до 12:00 по Москве (UTC+3, без перехода на летнее время)
+  // приказы на марш не принимаются. Время — серверное, часы клиента не влияют.
+  var NIGHT_FROM_H = 0, NIGHT_TO_H = 12, MSK_OFFSET_MS = 3 * 3600000;
+  function mskHour(now) { return new Date((now || window.wmNow()) + MSK_OFFSET_MS).getUTCHours(); }
+  function isNightBan() {
+    var h = mskHour();
+    return h >= NIGHT_FROM_H && h < NIGHT_TO_H;
+  }
+  // Сколько осталось до снятия запрета, «3 ч 20 мин»
+  function nightBanLeft() {
+    var msk = new Date(window.wmNow() + MSK_OFFSET_MS);
+    var end = Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth(), msk.getUTCDate(), NIGHT_TO_H);
+    var min = Math.max(1, Math.ceil((end - msk.getTime()) / 60000));
+    var parts = [];
+    if (min >= 60) parts.push(Math.floor(min / 60) + ' ч');
+    if (min % 60) parts.push((min % 60) + ' мин');
+    return parts.join(' ');
+  }
+  // Запрет касается лордов и заместителей; администратор двигает войска всегда.
+  function nightBlocked() {
+    var s = window._warSession;
+    return !!(s && !s.isAdmin && isNightBan());
+  }
+  function nightBanText() {
+    return 'Ночной запрет: с 00:00 до 12:00 МСК войска не получают приказов на марш. Снимется через ' + nightBanLeft() + '.';
+  }
+  window.WarNightBan = { active: isNightBan, left: nightBanLeft, mskHour: mskHour };
 
   // Просчёт маршрута по прямой с учётом местности (суша/море/дороги/тип тайла)
   // Один отрезок маршрута (произвольные начало/конец) с учётом местности
@@ -5417,6 +5511,22 @@ namedRegions.forEach(id => {
       return b.defenderTroopId===defenderTroopId && b.attackerFaction===attackerFaction && b.status==='declared';
     });
   }
+  // Остановить марш на текущей точке. Своё войско пишется обычным путём; чужое
+  // (защитник) — точечной правкой x/y/move, состав и прочие поля не трогаются.
+  function haltTroop(troop) {
+    if (!troop || !troop.move) return;
+    var pos = troopPos(troop);
+    if (pos.arrived) return;                       // уже дошло — прибытие оформит settleArrivals
+    troop.x = Math.round(pos.x); troop.y = Math.round(pos.y);
+    troop.tileId = findTile(troop.x, troop.y);
+    delete troop.move;
+    if (canWriteTroop(troop)) saveTroops();
+    else {
+      try { localStorage.setItem('wm_troops', JSON.stringify(window.troopsData)); } catch(e) {}
+      if (window._haltTroopRemote) window._haltTroopRemote(troop.id, troop.x, troop.y, troop.tileId);
+    }
+  }
+
   // Объявить битву: списать ресурсы, создать запись, синхронизировать
   function declareBattle(enemyTroop) {
     var s = window._warSession;
@@ -5436,9 +5546,12 @@ namedRegions.forEach(id => {
       id: 'battle-'+Date.now(),
       attackerFaction: s.faction, attackerTroopId: atk.troop.id, attackerTroopName: atk.troop.name,
       defenderFaction: enemyTroop.faction, defenderTroopId: enemyTroop.id, defenderTroopName: enemyTroop.name,
-      x: Math.round(ep.x), y: Math.round(ep.y), ts: Date.now(), status: 'declared'
+      x: Math.round(ep.x), y: Math.round(ep.y), ts: window.wmNow(), status: 'declared'
     });
     saveBattles();
+    // Обе стороны останавливаются там, где их застало объявление
+    haltTroop(atk.troop);
+    haltTroop(enemyTroop);
     if (window.renderBattles) window.renderBattles();
     if (window.renderHUD) window.renderHUD();
     logAction('Объявил битву против «'+enemyTroop.name+'» ('+(FACTION_META[enemyTroop.faction]||{}).label+')', ep.x, ep.y);
@@ -5446,13 +5559,26 @@ namedRegions.forEach(id => {
     showTroopInfo(enemyTroop.id);
   }
 
-  // Текущее положение войска с учётом перехода
+  // Текущее положение войска с учётом перехода.
+  // Войско в объявленной битве стоит там, где его застало объявление, — это видят
+  // все клиенты одинаково, даже пока владелец не зашёл и не зафиксировал остановку.
   function troopPos(troop) {
     var m = troop.move;
     if (!m) return { x: troop.x, y: troop.y, moving: false };
+    var now = window.wmNow();
+    var fz = battleFreezeTs(troop.id);
+    if (fz && fz < now) {
+      var fp = troopPosAt(troop, Math.max(fz, m.start || 0));
+      fp.moving = false; fp.frozen = true;
+      return fp;
+    }
+    return troopPosAt(troop, now);
+  }
+  function troopPosAt(troop, now) {
+    var m = troop.move;
     // многоточечный путь
     if (m.path && m.path.length >= 2) {
-      var elapsed = window.wmNow() - m.start;
+      var elapsed = now - m.start;
       if (elapsed >= m.durMs) { var L = m.path[m.path.length-1]; return { x:L[0], y:L[1], moving:false, arrived:true }; }
       var t = Math.max(0, elapsed), i = 0;
       while (i < m.legMs.length - 1 && t > m.legMs[i]) { t -= m.legMs[i]; i++; }
@@ -5462,7 +5588,7 @@ namedRegions.forEach(id => {
     }
     // одиночный отрезок (совместимость со старыми переходами)
     var dx = m.tx - m.fx, dy = m.ty - m.fy;
-    var frac = m.durMs > 0 ? (window.wmNow() - m.start) / m.durMs : 1;
+    var frac = m.durMs > 0 ? (now - m.start) / m.durMs : 1;
     if (frac >= 1) return { x: m.tx, y: m.ty, moving: false, arrived: true };
     return { x: m.fx + dx*frac, y: m.fy + dy*frac, moving: true, frac: frac };
   }
@@ -5495,6 +5621,11 @@ namedRegions.forEach(id => {
       var pos = troopPos(troop);
       troop.x = Math.round(pos.x); troop.y = Math.round(pos.y);
       troop.tileId = findTile(troop.x, troop.y);
+      if (pos.frozen && !pos.arrived) {
+        // Битва остановила марш: владелец (или админ) фиксирует стоянку в облаке
+        if (canWriteTroop(troop)) { delete troop.move; changed = true; mine = true; }
+        return;
+      }
       if (pos.arrived) {
         // Слияние выполняет только владелец: иначе два клиента сольют дважды
         if (troop.move.mergeInto && canWriteTroop(troop)) arrivedMerges.push(troop);
@@ -5559,6 +5690,9 @@ namedRegions.forEach(id => {
   window._warPendingMove = null; // { troopId, plan, cost }
 
   function startMoveMode(troopId, keep) {
+    var s = window._warSession;
+    if (s && !s.isAdmin && troopInBattle(troopId)) { toast('Войско в битве — движение невозможно до её завершения'); return; }
+    if (nightBlocked()) { toast(nightBanText()); return; }
     window._warPlaceMode = false;
     var pb = document.getElementById('war-place-btn');
     if (pb) pb.classList.remove('active');
@@ -5578,8 +5712,71 @@ namedRegions.forEach(id => {
     window.renderTroops();
   }
 
+  // ── Разведка войск ────────────────────────────────────────
+  // Войско в тайле видит свой тайл и все соседние (с общей границей).
+  // Вне тайлов (море) обзор — круг SEA_SCOUT_RADIUS, сравнимый с размером тайла
+  // (медиана тайла ~217×193 ед.). Войско на берегу тем же радиусом видит флот в море.
+  var SEA_SCOUT_RADIUS = 200;   // единиц SVG (~250 км)
+  var ADJ_GAP = 8;              // зазор между контурами, при котором тайлы ещё соседи
+  var _adj = null, _adjSig = '';
+  function polyGap(a, b) {      // ближайшее расстояние от вершин a до рёбер b
+    var best = Infinity, P = b.points;
+    for (var i=0; i<a.points.length; i++) {
+      var p = a.points[i];
+      for (var j=0; j<P.length; j++) {
+        var d = distToSeg(p[0], p[1], P[j === 0 ? P.length-1 : j-1], P[j]);
+        if (d < best) { best = d; if (best <= ADJ_GAP) return best; }
+      }
+    }
+    return best;
+  }
+  function tileAdjacency() {
+    var tiles = (window.tilesData||[]).filter(function(t){ return t && t.id && t.points && t.points.length >= 3; });
+    var sum = 0;                                    // дешёвая подпись: меняется при любой правке контуров
+    tiles.forEach(function(t){ t.points.forEach(function(p){ sum += p[0]*31 + p[1]; }); });
+    var sig = tiles.length + ':' + Math.round(sum);
+    if (_adj && sig === _adjSig) return _adj;
+    var boxes = tiles.map(tileBBox), adj = {};
+    tiles.forEach(function(t){ adj[t.id] = []; });
+    for (var i=0; i<tiles.length; i++) {
+      for (var j=i+1; j<tiles.length; j++) {
+        if (!bboxNear(boxes[i], boxes[j], ADJ_GAP)) continue;
+        if (polyGap(tiles[i], tiles[j]) <= ADJ_GAP || polyGap(tiles[j], tiles[i]) <= ADJ_GAP) {
+          adj[tiles[i].id].push(tiles[j].id); adj[tiles[j].id].push(tiles[i].id);
+        }
+      }
+    }
+    _adj = adj; _adjSig = sig;
+    return adj;
+  }
+  // Что разведали войска фракции: тайлы (свой + соседние) и точки обзора по радиусу
+  function scoutZones(fid) {
+    var adj = tileAdjacency(), tiles = {}, open = [], coast = [];
+    (window.troopsData||[]).forEach(function(t){
+      if (t.faction !== fid) return;
+      var p = troopPos(t), tid = findTile(p.x, p.y);
+      if (tid) {
+        tiles[tid] = true;
+        (adj[tid]||[]).forEach(function(id){ tiles[id] = true; });
+        coast.push(p);            // из тайла по радиусу видно только то, что вне тайлов (флот в море)
+      } else {
+        open.push(p);             // в море по радиусу видно всё
+      }
+    });
+    return { tiles: tiles, open: open, coast: coast };
+  }
+  function scoutSees(z, p) {
+    var tid = findTile(p.x, p.y);
+    if (tid && z.tiles[tid]) return true;
+    var R2 = SEA_SCOUT_RADIUS * SEA_SCOUT_RADIUS;
+    function near(q) { var dx = q.x-p.x, dy = q.y-p.y; return dx*dx + dy*dy <= R2; }
+    if (z.open.some(near)) return true;
+    return !tid && z.coast.some(near);
+  }
+  window.WarScout = { zones: scoutZones, sees: scoutSees, adjacency: tileAdjacency, radius: SEA_SCOUT_RADIUS };
+
   // ── Visibility ────────────────────────────────────────────
-  function isTroopVisible(troop) {
+  function isTroopVisible(troop, zones) {
     var s = window._warSession;
     if (!s) return false;
     if (s.isAdmin) return true;
@@ -5587,7 +5784,9 @@ namedRegions.forEach(id => {
     // Чужое войско видно, если оно внутри территории лорда (регион + переданные тайлы)
     // или в пределах зоны разведки у её границы. Работает и для войск в открытом поле.
     var p = troopPos(troop);
-    return nearTerritory(s.faction, p.x, p.y);
+    if (nearTerritory(s.faction, p.x, p.y)) return true;
+    // …а также если его разведало одно из войск лорда
+    return scoutSees(zones || scoutZones(s.faction), p);
   }
 
   // ── SVG layer ─────────────────────────────────────────────
@@ -5665,9 +5864,11 @@ namedRegions.forEach(id => {
   window.renderTroops = function () {
     while (layer.firstChild) layer.removeChild(layer.firstChild);
     var pending = window._warPendingMove;
+    var sess0 = window._warSession;
+    var zones = (sess0 && !sess0.isAdmin) ? scoutZones(sess0.faction) : null;
 
     (window.troopsData||[]).forEach(function(troop) {
-      if (!isTroopVisible(troop)) return;
+      if (!isTroopVisible(troop, zones)) return;
       var meta  = FACTION_META[troop.faction] || {color:'#aaa'};
       var pos   = troopPos(troop);
       var cx = pos.x, cy = pos.y;
@@ -5778,6 +5979,13 @@ namedRegions.forEach(id => {
     if (!window._warSession) return;
     if (settleUpkeep()) renderHUD();
   }, 15000);
+  // Значок ночного запрета включается и гаснет сам — по московскому времени
+  var _nightWas = null;
+  setInterval(function(){
+    if (!window._warSession) return;
+    var n = isNightBan();
+    if (n !== _nightWas) { _nightWas = n; renderHUD(); }
+  }, 20000);
 
   // ── Troop info panel ──────────────────────────────────────
   function showTroopInfo(troopId) {
@@ -5805,8 +6013,15 @@ namedRegions.forEach(id => {
     var typeLabel = typeLabelOf(troop);
     var pending = window._warPendingMove;
     var moveBlock;
+    var admin = !!(s && s.isAdmin);
+    var lockBattle = inBattle && !admin;       // лорду в битве двигаться нельзя
+    var night = nightBlocked();
+    var nightNote = '<div class="troop-night">&#127769; ' + nightBanText() + '</div>';
 
-    if (troop.move) {
+    if (troop.move && troopPos(troop).frozen) {
+      moveBlock = '<div class="troop-march-box"><div style="color:#ff9a6a"><b>&#9876; Марш остановлен битвой</b></div>'
+        + '<div style="margin-top:3px;color:#9ab">Войско стоит на месте до завершения битвы.</div></div>';
+    } else if (troop.move) {
       var remDays = remainingGameDays(troop);
       var remReal = remDays / GAME_DAYS_PER_REAL_DAY;
       moveBlock = '<div class="troop-march-box">'
@@ -5836,7 +6051,9 @@ namedRegions.forEach(id => {
         + costRows;
       var starveBlock = !free && econ.starving;
       var warn = '';
-      if (blocked) warn = '<div class="march-warn">'+(pending.fleet?'Флот не пройдёт по суше / непроходимым горам':'Армия не пройдёт через море / непроходимые горы')+' — измените маршрут</div>';
+      if (lockBattle) warn = '<div class="march-warn">Войско в битве — выступить нельзя до её завершения</div>';
+      else if (night) warn = '<div class="march-warn">&#127769; Ночной запрет до 12:00 МСК (ещё ' + nightBanLeft() + ')</div>';
+      else if (blocked) warn = '<div class="march-warn">'+(pending.fleet?'Флот не пройдёт по суше / непроходимым горам':'Армия не пройдёт через море / непроходимые горы')+' — измените маршрут</div>';
       else if (poor) warn = '<div class="march-warn">Недостаточно ресурсов в казне</div>';
       else if (starveBlock) warn = '<div class="march-warn">Фракция голодает — пополните запасы</div>';
       moveBlock = '<div class="troop-march-box">'
@@ -5844,7 +6061,7 @@ namedRegions.forEach(id => {
         + '<div style="color:#ffcc66;margin-bottom:6px"><b>Планируемый марш</b> <span style="color:#9ab;font-weight:normal">('+route+')</span></div>'
         + rows + warn
         + '<div style="display:flex;gap:6px;margin-top:8px">'
-        + '<button id="troop-go" class="war-btn-go"'+((blocked||poor||starveBlock)?' disabled':'')+'>Выступить</button>'
+        + '<button id="troop-go" class="war-btn-go"'+((blocked||poor||starveBlock||lockBattle||night)?' disabled':'')+'>Выступить</button>'
         + '<button id="troop-add-point" class="war-btn-gold">➕ Точка</button>'
         + '</div>'
         + '<div style="display:flex;gap:6px;margin-top:6px">'
@@ -5854,7 +6071,7 @@ namedRegions.forEach(id => {
     } else {
       var extra = '';
       if (canEdit && !inBattle) {
-        var cands = mergeCandidates(troop);
+        var cands = night ? [] : mergeCandidates(troop);
         if (cands.length) {
           extra += '<div class="troop-merge-box">'
             + '<div class="troop-merge-t">&#9878; Соединить с войском</div>'
@@ -5865,7 +6082,7 @@ namedRegions.forEach(id => {
             + '<div class="troop-merge-hint">Войско дойдёт своим ходом; бойцы перейдут только по прибытии.</div>'
             + '</div>';
         }
-        if (!isDragon(troop)) {
+        if (!isDragon(troop) && !night) {
           var wantSea = isFleet(troop);
           var spot = nearestOfKind(troop.x, troop.y, !wantSea);
           if (spot) {
@@ -5875,8 +6092,11 @@ namedRegions.forEach(id => {
           }
         }
       }
+      // В битве и ночью кнопки марша нет — вместо неё пояснение
       moveBlock = (canEdit
-        ? '<button id="troop-move" class="war-btn-gold" style="margin-top:8px">⇒ Переместить</button>'
+        ? (lockBattle ? ''
+          : night ? nightNote
+          : '<button id="troop-move" class="war-btn-gold" style="margin-top:8px">⇒ Переместить</button>')
         : '') + extra;
     }
 
@@ -5913,7 +6133,7 @@ namedRegions.forEach(id => {
       + battleBlock
       + '<div class="field" style="margin-top:8px"><b>Состав ('+troopSize(troop)+'):</b></div>'
       + '<div id="troop-sol-list" style="margin:6px 0 10px">'+solHtml+'</div>'
-      + (inBattle ? '<div class="troop-frozen">&#9876; Битва объявлена: состав войска заморожен, соединение и роспуск недоступны до её завершения.</div>' : '')
+      + (inBattle ? '<div class="troop-frozen">&#9876; Битва объявлена: войско остановлено и не может двигаться, состав заморожен, соединение и роспуск недоступны до её завершения.</div>' : '')
       + (canEditSoldiers
         ? '<div style="display:flex;gap:6px;margin-bottom:8px">'
           + '<input id="troop-new-name" type="text" placeholder="Имя бойца"'
@@ -6027,6 +6247,8 @@ namedRegions.forEach(id => {
     var c = pending.cost;
     var s = window._warSession, free = s && s.isAdmin;
     var econ = getEcon(troop.faction);
+    if (!free && troopInBattle(troop.id)) { toast('Войско в битве — движение невозможно до её завершения'); return; }
+    if (nightBlocked()) { toast(nightBanText()); return; }
     if (pending.wrongFrac > SEA_TOLERANCE) { toast(pending.fleet?'Флот не пройдёт по суше / горам':'Армия не пройдёт через море / непроходимые горы'); return; }
     if (!free) {
       if (econ.starving) { toast('Фракция голодает — марш невозможен'); return; }
@@ -6086,18 +6308,55 @@ namedRegions.forEach(id => {
   window._warToast = toast;
 
   // ── Auth ──────────────────────────────────────────────────
-  // Роль ника: администратор, лидер фракции или её заместитель.
-  // У заместителя полномочия лидера — отличается только подпись.
-  function roleOf(nick) {
-    var key = String(nick || '').toLowerCase();
-    var lead = (window._leaders || {})[key];
-    if (lead === 'admin') return { role:'admin' };
-    if (lead && FACTION_META[lead]) return { role:'lord', fid:lead };
-    var dep = (window._deputies || {})[key];
-    if (dep && FACTION_META[dep]) return { role:'deputy', fid:dep };
-    return { role:null };
+  // Роли ника: администратор, лидер фракции, заместитель. Одному нику можно выдать
+  // несколько ролей: в war/leaders и war/deputies значение — список через запятую
+  // («admin,north», «reach,dorne»). Одиночное значение — прежний формат, он не изменился.
+  function roleList(v) {
+    if (Array.isArray(v)) return v.map(String).filter(Boolean);
+    return String(v == null ? '' : v).split(',').map(function(x){ return x.trim(); }).filter(Boolean);
   }
+  function roleJoin(list) {
+    var seen = {}, out = [];
+    (list || []).forEach(function(x){ if (x && !seen[x]) { seen[x] = true; out.push(x); } });
+    return out.join(',');
+  }
+  window.WarRoleList = roleList;
+  window.WarRoleJoin = roleJoin;
+
+  // Все роли ника по порядку: администратор, лидерства, заместительства.
+  // Каждая роль: { role:'admin'|'lord'|'deputy', fid, key }
+  function rolesOf(nick) {
+    var key = String(nick || '').toLowerCase(), out = [], seen = {};
+    function add(r) { if (!seen[r.key]) { seen[r.key] = true; out.push(r); } }
+    var lead = roleList((window._leaders || {})[key]);
+    if (lead.indexOf('admin') >= 0) add({ role:'admin', fid:'admin', key:'admin' });
+    lead.forEach(function(fid){ if (fid !== 'admin' && FACTION_META[fid]) add({ role:'lord', fid:fid, key:'lord:'+fid }); });
+    roleList((window._deputies || {})[key]).forEach(function(fid){
+      if (FACTION_META[fid] && !seen['lord:'+fid]) add({ role:'deputy', fid:fid, key:'deputy:'+fid });
+    });
+    return out;
+  }
+  // Совместимость: первая (главная) роль ника
+  function roleOf(nick) { return rolesOf(nick)[0] || { role:null }; }
   window.WarRoleOf = roleOf;
+  window.WarRolesOf = rolesOf;
+
+  function roleKeyOfSession(s) {
+    if (!s) return null;
+    if (s.isAdmin) return 'admin';
+    return (s.deputy ? 'deputy:' : 'lord:') + s.faction;
+  }
+  function roleTitle(r) {
+    if (r.role === 'admin') return 'Администратор';
+    var lbl = (FACTION_META[r.fid] || {}).label || r.fid;
+    return lbl + (r.role === 'deputy' ? ' · заместитель' : '');
+  }
+  function sessionForRole(nick, r) {
+    if (r.role === 'admin')
+      return { faction:'admin', isAdmin:true, name:nick, factionLabel:'Администратор', nick:nick };
+    return { faction:r.fid, isAdmin:false, name:nick, nick:nick, deputy: r.role === 'deputy',
+             factionLabel: roleTitle(r) };
+  }
 
   // Сравниваем SHA-256-хэши; старые пароли, сохранённые открытым текстом,
   // тоже принимаются (совместимость) — при входе они автоматически заменяются хэшем.
@@ -6116,20 +6375,10 @@ namedRegions.forEach(id => {
         if ((rec.nick||'').toLowerCase() !== nick.toLowerCase()) return false;
         window._authConsume(hash);                       // код одноразовый
 
-        var r = roleOf(nick);
-        if (r.role === 'admin') {
-          saveSession({ faction:'admin', isAdmin:true, name:rec.nick,
-                        factionLabel:'Администратор', nick:rec.nick });
-          return true;
-        }
-        if (r.role === 'lord' || r.role === 'deputy') {
-          var lbl = (FACTION_META[r.fid]||{}).label || r.fid;
-          saveSession({ faction:r.fid, isAdmin:false, name:rec.nick, nick:rec.nick,
-                        deputy: r.role === 'deputy',
-                        factionLabel: lbl + (r.role === 'deputy' ? ' · заместитель' : '') });
-          return true;
-        }
-        return 'no-role';                                // ник опознан, но роли нет
+        var roles = rolesOf(nick);
+        if (!roles.length) return 'no-role';             // ник опознан, но роли нет
+        if (roles.length === 1) { saveSession(sessionForRole(rec.nick, roles[0])); return true; }
+        return { choose: roles, nick: rec.nick };        // несколько ролей — игрок выбирает, за кого играть
       });
     });
   }
@@ -6144,14 +6393,21 @@ namedRegions.forEach(id => {
     // Оба списка ролей должны быть загружены, иначе роль «не найдена» —
     // просто потому, что данные ещё в пути.
     if (!window._leadersLoaded || !window._deputiesLoaded) return;
-    var r = roleOf(s.nick);
-    var now = (r.role === 'admin') ? 'admin' : r.fid || null;
-    var was = s.isAdmin ? 'admin' : s.faction;
-    var sameKind = (r.role === 'deputy') === !!s.deputy;
-    if (now === was && sameKind) return;
-    var role = now;
+    var roles = rolesOf(s.nick);
+    var curKey = roleKeyOfSession(s);
+    if (roles.some(function(x){ return x.key === curKey; })) {
+      if (window.renderHUD) window.renderHUD();     // роль в силе; кнопка смены роли могла появиться/исчезнуть
+      return;
+    }
+    // Своя фракция (или фракция из списка ролей) ещё не подгрузилась — не спешим отзывать
+    var key = String(s.nick).toLowerCase();
+    var raw = roleList((window._leaders||{})[key]).concat(roleList((window._deputies||{})[key]));
+    if (!window._warLoaded) {
+      if (raw.some(function(f){ return f !== 'admin' && !FACTION_META[f]; })) return;
+      if (!s.isAdmin && !FACTION_META[s.faction]) return;
+    }
 
-    if (!role) {                                   // доступ отозван
+    if (!roles.length) {                           // доступ отозван
       window._warSession = null;
       window._warPlaceMode = false;
       window._warPendingMove = null;
@@ -6163,19 +6419,15 @@ namedRegions.forEach(id => {
       updateUI();
       return;
     }
-    if (role === 'admin') {                        // повышен до администратора
-      saveSession({ faction:'admin', isAdmin:true, name:s.nick,
-                    factionLabel:'Администратор', nick:s.nick });
-      toast('Вам выданы права администратора');
-    } else if (FACTION_META[role]) {               // фракция или роль изменились
-      var lbl = (FACTION_META[role]||{}).label || role;
-      var isDep = (r.role === 'deputy');
-      saveSession({ faction:role, isAdmin:false, name:s.nick, nick:s.nick, deputy:isDep,
-                    factionLabel: lbl + (isDep ? ' · заместитель' : '') });
-      toast(isDep ? 'Вы назначены заместителем: ' + lbl : 'Вы теперь лидер: ' + lbl);
-    } else {
-      return;                                      // фракция ещё не подгрузилась — ждём
-    }
+    // Текущую роль сняли: та же фракция в другом качестве, иначе первая оставшаяся роль
+    var r = roles.filter(function(x){ return !s.isAdmin && x.fid === s.faction; })[0] || roles[0];
+    var oldTitle = s.factionLabel || (s.isAdmin ? 'Администратор' : s.faction);
+    saveSession(sessionForRole(s.nick, r));
+    if (r.role === 'admin') toast('Вам выданы права администратора');
+    else if (!s.isAdmin && r.fid === s.faction)
+      toast(r.role === 'deputy' ? 'Вы назначены заместителем: ' + roleTitle({role:'lord', fid:r.fid})
+                                : 'Вы теперь лидер: ' + roleTitle(r));
+    else toast('Роль «' + oldTitle + '» снята администратором. Теперь: ' + roleTitle(r));
     window._warPendingMove = null;
     updateUI();
     if (window.renderTroops) window.renderTroops();
@@ -6230,8 +6482,11 @@ namedRegions.forEach(id => {
     +   '</div>'
     + '</div>'
     + '<div id="war-status-bar">'
+    +   '<button id="war-role-btn" title="Сменить авторизацию" style="display:none">&#8644;</button>'
     +   '<span id="war-sigil"></span>'
     +   '<span id="war-status-name"></span>'
+    +   '<span class="war-chip war-night-chip" id="war-night" style="display:none"'
+    +     ' title="С 00:00 до 12:00 по Москве приказы на марш не принимаются">&#127769; до 12:00</span>'
     +   '<span id="war-treasury">'
     +     '<span class="war-chip" id="war-money" title="Казна — деньги">💰 <b>0</b></span>'
     +     '<span class="war-chip" id="war-food"  title="Запасы — еда">🌾 <b>0</b></span>'
@@ -6256,7 +6511,13 @@ namedRegions.forEach(id => {
     var sigil = document.getElementById('war-sigil');
     var meta = FACTION_META[s.faction] || { color:'#d4a857' };
     sigil.style.background = meta.color;
-    statusName.textContent = s.isAdmin ? 'Администратор' : s.factionLabel + ' · ' + s.name;
+    statusName.textContent = s.isAdmin ? 'Администратор' + (s.nick ? ' · ' + s.nick : '') : s.factionLabel + ' · ' + s.name;
+    // Кнопка смены роли — только если у ника есть вторая должность
+    document.getElementById('war-role-btn').style.display =
+      (s.nick && rolesOf(s.nick).length > 1) ? '' : 'none';
+    var nightChip = document.getElementById('war-night');
+    nightChip.style.display = isNightBan() ? 'inline-flex' : 'none';
+    nightChip.title = isNightBan() ? nightBanText() : '';
     var treasury = document.getElementById('war-treasury');
     if (s.isAdmin) { treasury.style.display = 'none'; return; }
     treasury.style.display = 'inline-flex';
@@ -6326,6 +6587,15 @@ namedRegions.forEach(id => {
       authErr.textContent = 'Проверяем…';
       tryLoginNick(nickInput.value, codeInput.value).then(function (res) {
         if (res === true) { nickInput.value = ''; codeInput.value = ''; finishLogin(); return; }
+        if (res && res.choose) {               // несколько должностей — выбор роли
+          nickInput.value = ''; codeInput.value = ''; authErr.textContent = '';
+          authModal.style.display = 'none';
+          openRolePicker(res.nick, res.choose, false, function (r) {
+            saveSession(sessionForRole(res.nick, r));
+            finishLogin();
+          });
+          return;
+        }
         authErr.textContent = (res === 'no-role')
           ? 'Ник опознан, но лидером не назначен — попроси администратора'
           : 'Неверный ник или код (код живёт 5 минут и работает один раз)';
@@ -6343,6 +6613,67 @@ namedRegions.forEach(id => {
   });
   document.getElementById('war-auth-cancel').addEventListener('click', function(){ authModal.style.display='none'; });
   authModal.addEventListener('click', function(e){ if(e.target===authModal) authModal.style.display='none'; });
+
+  // ── Выбор роли: один ник — несколько должностей ───────────
+  // canCancel=false при входе: код уже сгорел, без выбора игрок остался бы ни с чем.
+  function openRolePicker(nick, roles, canCancel, onPick) {
+    var box = document.getElementById('war-role-modal');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'war-role-modal';
+      box.innerHTML =
+          '<div id="war-role-box">'
+        +   '<div id="war-role-title">За кого играем?</div>'
+        +   '<div id="war-role-sub"></div>'
+        +   '<div id="war-role-list"></div>'
+        +   '<button id="war-role-cancel" class="abtn-ghost">Отмена</button>'
+        + '</div>';
+      document.body.appendChild(box);
+    }
+    var s = window._warSession, cur = roleKeyOfSession(s);
+    document.getElementById('war-role-sub').innerHTML =
+      'У ника <b>' + nick + '</b> несколько должностей. Сменить выбор можно в любой момент кнопкой &#8644; в верхней панели.';
+    var list = document.getElementById('war-role-list');
+    list.innerHTML = roles.map(function (r, i) {
+      var col = r.role === 'admin' ? '#d6a45a' : ((FACTION_META[r.fid] || {}).color || '#8b97a4');
+      var kind = r.role === 'admin' ? 'управление картой' : r.role === 'deputy' ? 'заместитель лидера' : 'лидер региона';
+      return '<button class="war-role-opt' + (s && r.key === cur ? ' current' : '') + '" data-i="' + i + '">'
+        + '<span class="war-role-dot" style="background:' + col + '"></span>'
+        + '<span class="war-role-txt"><b>' + (r.role === 'admin' ? 'Администратор' : ((FACTION_META[r.fid] || {}).label || r.fid)) + '</b>'
+        + '<i>' + kind + (s && r.key === cur ? ' · сейчас' : '') + '</i></span>'
+        + '</button>';
+    }).join('');
+    var cancel = document.getElementById('war-role-cancel');
+    cancel.style.display = canCancel ? '' : 'none';
+    function close() { box.style.display = 'none'; }
+    cancel.onclick = close;
+    box.onclick = function (e) { if (e.target === box && canCancel) close(); };
+    list.querySelectorAll('.war-role-opt').forEach(function (b) {
+      b.onclick = function () { close(); onPick(roles[+b.dataset.i]); };
+    });
+    box.style.display = 'flex';
+  }
+
+  // Смена авторизации без нового кода: все роли принадлежат одному и тому же нику
+  document.getElementById('war-role-btn').addEventListener('click', function () {
+    var s = window._warSession;
+    if (!s || !s.nick) return;
+    var roles = rolesOf(s.nick);
+    if (roles.length < 2) { renderHUD(); return; }
+    openRolePicker(s.nick, roles, true, function (r) {
+      if (r.key === roleKeyOfSession(window._warSession)) return;
+      if (window._warMoveMode) stopMoveMode();
+      window._warPlaceMode = false; window._warPendingMove = null;
+      placeBtn.classList.remove('active');
+      document.body.classList.remove('war-place-mode');
+      renderMusterHints();
+      saveSession(sessionForRole(s.nick, r));
+      if (infoEl) infoEl.innerHTML = '';
+      updateUI();
+      toast('Теперь вы играете как: ' + roleTitle(r));
+      if (r.role !== 'admin') logLogin(r.fid);
+    });
+  });
 
   logoutBtn.addEventListener('click', function(){
     window._warSession = null; window._warPlaceMode = false;
@@ -6514,6 +6845,7 @@ namedRegions.forEach(id => {
     if (!troop || !target) return;
     if (troopInBattle(troop.id))  { toast('Войско в битве — соединение невозможно'); return; }
     if (troopInBattle(target.id)) { toast('Цель участвует в битве'); return; }
+    if (nightBlocked()) { toast(nightBanText()); return; }
     var pos = troopPos(target);
     var plan = buildPendingRoute(troop, [[Math.round(pos.x), Math.round(pos.y)]]);
     plan.mergeInto = target.id;
@@ -6579,6 +6911,7 @@ namedRegions.forEach(id => {
     var troop = (window.troopsData || []).find(function (t) { return t.id === troopId; });
     if (!troop || troop.move) return;
     if (troopInBattle(troop.id)) { toast('Войско в битве — перестроение невозможно'); return; }
+    if (nightBlocked()) { toast(nightBanText()); return; }
     var toLand = isFleet(troop);
     var spot = nearestOfKind(troop.x, troop.y, !toLand);
     if (!spot) { toast(toLand ? 'Берега поблизости нет' : 'Моря поблизости нет'); return; }
@@ -7062,6 +7395,9 @@ namedRegions.forEach(id => {
     clearTimeout(guard['_t_' + key]);
     guard['_t_' + key] = setTimeout(function () { writing[key] = false; }, 1500);
   }
+  // Изменения администратора — верховный закон карты: заливать локальный кэш
+  // в опустевшую ветку облака разрешено только ему.
+  function isAdminSession() { var s = window._warSession; return !!(s && s.isAdmin); }
   function lsGet(k){ try { var s=localStorage.getItem(k); return s?JSON.parse(s):null; } catch(e){ return null; } }
   function lsSet(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
   function asArray(v){ // Firebase отдаёт разреженный массив как объект — нормализуем
@@ -7160,12 +7496,44 @@ namedRegions.forEach(id => {
     if (window._refreshGarrisonView) window._refreshGarrisonView();
   });
 
+  // Битвы тоже пишутся ПОТОЧЕЧНО ({ id: битва }), а каждая завершённая битва
+  // получает «надгробие» в battleTombs. Раньше узел перезаписывался целым массивом,
+  // а вкладка, видевшая пустое облако, заливала туда свою старую копию из localStorage —
+  // так удалённая администратором битва под Королевской Гаванью воскресала снова и снова.
+  var battleTombsRef = db.ref(ROOT + '/battleTombs');
+  var _battlesSent = {};         // id -> JSON последнего известного облачного состояния
+  var _battleTombs = {};         // id -> момент удаления
   window._syncBattles = function () {
-    guard('battles');
-    battlesRef.set(window.battlesData || []).catch(function (e) { console.warn('[Sync] battles:', e); });
+    var cur = {};
+    (window.battlesData || []).forEach(function (b) { if (b && b.id && !_battleTombs[b.id]) cur[b.id] = b; });
+    var upd = {}, tombs = {}, n = 0;
+    Object.keys(cur).forEach(function (id) {
+      var j = JSON.stringify(cur[id]);
+      if (_battlesSent[id] === j) return;
+      upd[id] = cur[id]; _battlesSent[id] = j; n++;
+    });
+    Object.keys(_battlesSent).forEach(function (id) {
+      if (cur[id]) return;
+      upd[id] = null; delete _battlesSent[id]; n++;
+      tombs[id] = window.wmNow(); _battleTombs[id] = tombs[id];
+    });
+    if (!n) return;
+    battlesRef.update(upd).catch(function (e) { console.warn('[Sync] battles:', e); });
+    if (Object.keys(tombs).length)
+      battleTombsRef.update(tombs).catch(function (e) { console.warn('[Sync] battleTombs:', e); });
   };
 
-  var WAR_KEYS = { econ:'wm_war_econ', rates:'wm_war_rates', passwords:'wm_war_passwords', actions:'wm_war_actions', logins:'wm_war_logins', factions:'wm_war_factions', garrisonCaps:'wm_garrison_caps' };
+  // Точечная остановка ЧУЖОГО войска при объявлении битвы: правим только позицию
+  // и марш, состав и прочее остаётся как у владельца.
+  window._haltTroopRemote = function (id, x, y, tileId) {
+    var t = (window.troopsData || []).find(function (q) { return q && q.id === id; });
+    if (t) _troopsSent[id] = JSON.stringify(t);
+    guardTroop(id);
+    troopsRef.child(id).update({ x: x, y: y, tileId: tileId || null, move: null })
+      .catch(function (e) { console.warn('[Sync] halt troop:', e); });
+  };
+
+  var WAR_KEYS = { econ:'wm_war_econ', rates:'wm_war_rates', passwords:'wm_war_passwords', actions:'wm_war_actions', logins:'wm_war_logins', factions:'wm_war_factions', garrisonCaps:'wm_garrison_caps', placeOwners:'wm_place_owners' };
 
   // Казна пишется ПРИРАЩЕНИЯМИ по каждой фракции отдельно.
   // Абсолютная запись затирала бы пополнения, приходящие из Minecraft
@@ -7181,10 +7549,13 @@ namedRegions.forEach(id => {
       var upd = {};
       if (dM) upd.money = { '.sv': { increment: dM } };
       if (dF) upd.food  = { '.sv': { increment: dF } };
-      if (typeof cur.starving   !== 'undefined') upd.starving   = !!cur.starving;
-      if (typeof cur.lastUpkeep !== 'undefined') upd.lastUpkeep = cur.lastUpkeep;
+      // Флаги пишем, только если они правда изменились: иначе любой лорд, тратя свою казну,
+      // переписывал starving/lastUpkeep ВСЕХ фракций своей (возможно, устаревшей) копией.
+      if (typeof cur.starving !== 'undefined' && !!cur.starving !== !!seen.starving) upd.starving = !!cur.starving;
+      if (typeof cur.lastUpkeep !== 'undefined' && cur.lastUpkeep !== seen.lastUpkeep) upd.lastUpkeep = cur.lastUpkeep;
       if (!Object.keys(upd).length) return;
-      _econSent[fid] = { money: +cur.money || 0, food: +cur.food || 0 };
+      _econSent[fid] = { money: +cur.money || 0, food: +cur.food || 0,
+                         starving: !!cur.starving, lastUpkeep: cur.lastUpkeep };
       warRef.child('econ/' + fid).update(upd)
         .catch(function (e) { console.warn('[Sync] econ/' + fid + ':', e); });
     });
@@ -7211,7 +7582,9 @@ namedRegions.forEach(id => {
     var data = snap.val();
     if (!_initMap) {
       _initMap = true;
-      if (!data) { window._persistMap(); return; }   // пустая БД — засеять из локали
+      // пустая БД — засеять из локали может ТОЛЬКО администратор: иначе любая вкладка
+      // со старым кэшем вернула бы в облако то, что администратор удалил
+      if (!data) { if (isAdminSession()) window._persistMap(); return; }
     }
     if (!data) return;
     if (data.cities)        window.citiesData   = data.cities;
@@ -7238,7 +7611,7 @@ namedRegions.forEach(id => {
     var data = snap.val();
     if (!_initTroops) {
       _initTroops = true;
-      if (data == null) { if ((window.troopsData||[]).length) window._syncTroops(); return; }
+      if (data == null && isAdminSession()) { if ((window.troopsData||[]).length) window._syncTroops(); return; }
     }
     // Узел войск должен быть объектом с ключами-id: иначе точечная запись добавится
     // рядом с числовыми ключами массива и войска задвоятся. Проверяем КАЖДЫЙ снимок,
@@ -7276,7 +7649,7 @@ namedRegions.forEach(id => {
     var data = snap.val();
     if (!_initBiomes) {
       _initBiomes = true;
-      if (data == null) { var loc = lsGet('wm_biome_edits'); if (loc && Object.keys(loc).length) window._syncBiomes(loc); return; }
+      if (data == null && isAdminSession()) { var loc = lsGet('wm_biome_edits'); if (loc && Object.keys(loc).length) window._syncBiomes(loc); return; }
     }
     var edits = data || {};
     lsSet('wm_biome_edits', edits);
@@ -7284,27 +7657,45 @@ namedRegions.forEach(id => {
   });
 
   // ── Битвы ──
-  var _initBattles = false, _knownBattles = {};
-  battlesRef.on('value', function (snap) {
-    if (writing.battles) return;
-    var data = snap.val();
-    var arr = asArray(data);
-    var firstLoad = !_initBattles;
-    var s = window._warSession;
-    arr.forEach(function (b) {
-      if (b && b.id && !_knownBattles[b.id]) {
-        _knownBattles[b.id] = true;
-        if (!firstLoad && s && !s.isAdmin && b.defenderFaction === s.faction && window._warToast)
-          window._warToast('⚔ На ваше войско «' + b.defenderTroopName + '» объявлена битва!');
-      }
+  // Облако — единственный источник истины: локальная копия в облако больше НЕ заливается,
+  // даже если узел пуст (пустой узел = администратор всё завершил).
+  var _initBattles = false, _knownBattles = {}, _battlesRaw = null;
+  function applyBattles() {
+    var data = _battlesRaw;
+    var byId = {}, purge = {}, rekey = Array.isArray(data);
+    if (data && typeof data === 'object') Object.keys(data).forEach(function (k) {
+      var b = data[k];
+      if (!b || !b.id) { rekey = true; return; }
+      if (k !== b.id) rekey = true;
+      if (_battleTombs[b.id]) { purge[k] = null; return; }   // завершена — не воскрешаем
+      byId[b.id] = b;
     });
-    if (firstLoad) {
-      _initBattles = true;
-      if (data == null) { if ((window.battlesData||[]).length) window._syncBattles(); return; }
-    }
-    window.battlesData = arr;
+    // Старый формат (массив от вкладок со старым кодом) или битва с надгробием в облаке
+    if (rekey) battlesRef.set(byId).catch(function (e) { console.warn('[Sync] battles rekey:', e); });
+    else if (Object.keys(purge).length) battlesRef.update(purge).catch(function (e) { console.warn('[Sync] battles purge:', e); });
+
+    var firstLoad = !_initBattles;
+    _initBattles = true;
+    var s = window._warSession;
+    Object.keys(byId).forEach(function (id) {
+      var b = byId[id];
+      if (_knownBattles[id]) return;
+      _knownBattles[id] = true;
+      if (!firstLoad && s && !s.isAdmin && b.defenderFaction === s.faction && window._warToast)
+        window._warToast('⚔ На ваше войско «' + b.defenderTroopName + '» объявлена битва!');
+    });
+    window.battlesData = Object.keys(byId).map(function (k) { return byId[k]; });
+    _battlesSent = {};
+    Object.keys(byId).forEach(function (id) { _battlesSent[id] = JSON.stringify(byId[id]); });
     lsSet('wm_battles', window.battlesData);
-    if (window.renderBattles) window.renderBattles();
+    if (window.renderTroops) window.renderTroops();      // заморозка/положение войск зависят от битв
+    else if (window.renderBattles) window.renderBattles();
+  }
+  battlesRef.on('value', function (snap) { _battlesRaw = snap.val(); applyBattles(); });
+  battleTombsRef.on('value', function (snap) {
+    var t = snap.val() || {};
+    Object.keys(t).forEach(function (id) { _battleTombs[id] = t[id]; });
+    if (_initBattles) applyBattles();
   });
 
   // ── Военное состояние (экономика/тарифы/пароли/логи) ──
@@ -7314,19 +7705,23 @@ namedRegions.forEach(id => {
     var data = snap.val();
     if (!_initWar) {
       _initWar = true;
+      window._warLoaded = true;       // свои фракции получены — список ролей можно проверять окончательно
       if (data == null) {
         var hasLocal = Object.keys(WAR_KEYS).some(function (k) { var v = lsGet(WAR_KEYS[k]); return v && Object.keys(v).length; });
-        if (hasLocal) window._syncWar();
+        if (hasLocal && isAdminSession()) window._syncWar();
         return;
       }
     }
     if (!data) return;
     Object.keys(WAR_KEYS).forEach(function (k) { if (data[k] != null) lsSet(WAR_KEYS[k], data[k]); });
+    // Передачи городов: пустой узел значит «все возвращены по территории» — локальный кэш чистим
+    if (data.placeOwners == null) lsSet(WAR_KEYS.placeOwners, {});
     // Облако — источник истины по казне: запоминаем базу для будущих приращений
     _econSent = {};
     var ec = data.econ || {};
     Object.keys(ec).forEach(function (fid) {
-      _econSent[fid] = { money: +(ec[fid]||{}).money || 0, food: +(ec[fid]||{}).food || 0 };
+      var e = ec[fid] || {};
+      _econSent[fid] = { money: +e.money || 0, food: +e.food || 0, starving: !!e.starving, lastUpkeep: e.lastUpkeep };
     });
     if (window._applyCustomFactions) window._applyCustomFactions();  // новые фракции/восстания
     if (window._revalidateSession) window._revalidateSession();      // сохранённая сессия ещё в силе?
@@ -8489,19 +8884,40 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
   }
   function membersOf(id) { return (window.garrisonsData[id] || []).slice(); }
 
+  // Передача городов во владение: { "city:<idx>": fid }. Хранится в war/placeOwners.
+  // Без записи город принадлежит тому, чья территория его покрывает (как раньше).
+  // Замки — это тайлы: у них владелец пишется прямо в tile.owner.
+  function placeOwners() {
+    try { var raw = localStorage.getItem('wm_place_owners'); return raw ? (JSON.parse(raw) || {}) : {}; } catch (e) { return {}; }
+  }
+  function savePlaceOwners(m) {
+    try { localStorage.setItem('wm_place_owners', JSON.stringify(m)); } catch (e) {}
+    if (window._syncWar) window._syncWar('placeOwners');
+  }
+  function territoryOwner(place) {
+    var meta = window.FACTION_META || {};
+    // город в замке-тайле принадлежит хозяину тайла
+    if (place.kind === 'city' && window.WarCityHolder) {
+      var th = window.WarCityHolder(+place.id.slice(5), true);
+      if (th) return th;
+    }
+    var hit = null;
+    Object.keys(meta).forEach(function (fid) {
+      if (hit || fid === 'admin') return;
+      if (window.WarCanPlace && window.WarCanPlace(fid, place.x, place.y, true)) hit = fid;
+    });
+    return hit;
+  }
+
   /** Кто владеет местом — тот и распоряжается гарнизоном. */
   function ownerOf(place) {
     if (place.kind === 'tile') {
       var t = (window.tilesData || []).find(function (x) { return x.id === place.tileId; });
       return t && t.owner ? t.owner : null;
     }
-    var meta = window.FACTION_META || {};
-    var hit = null;
-    Object.keys(meta).forEach(function (fid) {
-      if (hit || fid === 'admin') return;
-      if (window.WarCanPlace && window.WarCanPlace(fid, place.x, place.y)) hit = fid;
-    });
-    return hit;
+    var ov = placeOwners()[place.id];
+    if (ov && (window.FACTION_META || {})[ov]) return ov;   // город передан (захвачен)
+    return territoryOwner(place);
   }
 
   function isAdminNow() {
@@ -8515,6 +8931,31 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
     if (s.isAdmin) return true;
     var owner = ownerOf(place);
     return !!owner && owner === s.faction;
+  }
+
+  /** Админ: передать город или замок во владение фракции. */
+  function renderOwnerCtl(place, owner) {
+    var meta = window.FACTION_META || {};
+    var isCity = place.kind === 'city';
+    var auto = isCity ? territoryOwner(place) : null;
+    var sel = isCity ? (placeOwners()[place.id] || '') : (owner || '');
+    var opts = [isCity
+      ? '<option value="">— по территории' + (auto && meta[auto] ? ': ' + meta[auto].label : '') + ' —</option>'
+      : '<option value="">— ничей —</option>'];
+    Object.keys(meta).forEach(function (fid) {
+      if (fid === 'admin') return;
+      opts.push('<option value="' + fid + '"' + (sel === fid ? ' selected' : '') + '>' + (meta[fid].label || fid) + '</option>');
+    });
+    var n = membersOf(place.id).length;
+    return '<div class="garr-own">'
+      + '<div class="garr-own-row">'
+      +   '<label>Владелец</label>'
+      +   '<select class="garr-own-sel">' + opts.join('') + '</select>'
+      +   '<button class="garr-own-save abtn-ghost">Передать</button>'
+      + '</div>'
+      + (n ? '<label class="garr-own-wipe-l"><input type="checkbox" class="garr-own-wipe" checked>'
+           + ' распустить прежний гарнизон (' + n + ')</label>' : '')
+      + '</div>';
   }
 
   /** Разметка блока гарнизона. */
@@ -8549,6 +8990,7 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
             + (typeof capsConfig()[place.id] === 'number'
                 ? '<button class="garr-cap-reset abtn-ghost" title="Вернуть общее значение">&#8634;</button>' : '')
             + '</div>'
+            + renderOwnerCtl(place, owner)
           : '')
       + (manage
           ? '<div class="garr-add">'
@@ -8558,7 +9000,8 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
             + '</div>'
           : '')
       + '<div class="garr-note">'
-      +   (ometa ? 'Распоряжается: <b style="color:' + ometa.color + '">' + ometa.label + '</b>. ' : '')
+      +   (ometa ? 'Распоряжается: <b style="color:' + ometa.color + '">' + ometa.label + '</b>'
+             + (place.kind === 'city' && placeOwners()[place.id] ? ' (передан администратором)' : '') + '. ' : '')
       +   'Гарнизон не показывается на карте войском. Защитник может стоять сразу в нескольких гарнизонах и вдобавок быть в полевом войске.'
       + '</div>'
       + '</div>';
@@ -8601,6 +9044,35 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
     };
     if (capReset) capReset.onclick = function () {
       var c = capsConfig(); delete c[place.id]; saveCaps(c);
+      redraw(place);
+    };
+
+    var ownSave = box.querySelector('.garr-own-save');
+    if (ownSave) ownSave.onclick = function () {
+      var fid = box.querySelector('.garr-own-sel').value;
+      var wipeEl = box.querySelector('.garr-own-wipe');
+      var before = ownerOf(place);
+      if (place.kind === 'city') {
+        var m = placeOwners();
+        if (fid) m[place.id] = fid; else delete m[place.id];
+        savePlaceOwners(m);
+      } else {
+        var t = (window.tilesData || []).find(function (x) { return x.id === place.tileId; });
+        if (!t) return;
+        if (fid) t.owner = fid; else delete t.owner;
+        if (window._persistMap) window._persistMap();
+        if (window.renderTiles) window.renderTiles();
+      }
+      var after = ownerOf(place);
+      // Захваченный замок новый хозяин заселяет своими людьми — прежний гарнизон распускается
+      if (wipeEl && wipeEl.checked && after !== before && membersOf(place.id).length) {
+        delete window.garrisonsData[place.id];
+        saveGarrisons();
+      }
+      var am = after ? (window.FACTION_META || {})[after] : null;
+      if (window._warToast) window._warToast(after === before ? 'Владелец не изменился'
+        : '«' + place.name + '» теперь во владении: ' + (am ? am.label : 'ничей'));
+      if (window.renderTroops) window.renderTroops();
       redraw(place);
     };
 
@@ -8665,7 +9137,9 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
   window.WarGarrisons = {
     get: membersOf,
     capacity: capacityOf,
-    all: function () { return window.garrisonsData || {}; }
+    all: function () { return window.garrisonsData || {}; },
+    ownerOf: ownerOf,
+    placeOwners: placeOwners
   };
 })();
 </script>
@@ -8731,6 +9205,92 @@ body.tileown-mode #map-wrap, body.pick-mode #map-wrap { cursor: crosshair !impor
   });
 })();
 </script>
+
+<style id="wm-batch1012">
+/* ── Тост: компактная плашка снизу по центру ─────────────
+   Раньше одновременно действовали top:22px и bottom:78px — плашка
+   растягивалась на всю высоту экрана. Теперь только низ и ширина по тексту. */
+#war-toast {
+  top: auto !important; bottom: 78px !important; height: auto !important;
+  width: max-content !important; max-width: min(460px, calc(100vw - 32px)) !important;
+  padding: 10px 18px !important; text-align: center; line-height: 1.45;
+  white-space: normal; box-sizing: border-box;
+  left: 50% !important; transform: translateX(-50%);
+  animation: wm-toast-rise .25s cubic-bezier(.2,.8,.25,1) !important;
+}
+/* общая wm-rise сбрасывала translateX(-50%) — во время появления плашка съезжала вправо */
+@keyframes wm-toast-rise {
+  0%   { opacity: 0; transform: translate(-50%, 14px) scale(.985); }
+  100% { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ── Смена авторизации (несколько должностей у одного ника) ── */
+#war-role-btn {
+  background: var(--surface-3); border: 1px solid var(--border-soft); color: var(--gold);
+  border-radius: 7px; cursor: pointer; font-size: 14px; line-height: 1;
+  padding: 4px 8px; font-family: var(--font-ui); font-weight: 700;
+  transition: border-color .15s, background .15s;
+}
+#war-role-btn:hover { border-color: var(--gold); background: var(--gold-soft); }
+#war-role-modal {
+  position: fixed; inset: 0; z-index: 1001; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(4,6,9,0.78); backdrop-filter: blur(7px);
+}
+#war-role-box {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.75); padding: 22px 22px 18px;
+  width: min(360px, calc(100vw - 32px)); box-sizing: border-box;
+  font-family: var(--font-ui); color: var(--text);
+  animation: wm-rise .26s cubic-bezier(.2,.8,.25,1);
+}
+#war-role-title {
+  font-family: var(--font-display); font-weight: 800; letter-spacing: -0.3px;
+  font-size: 1.25em; margin-bottom: 6px;
+}
+#war-role-sub { color: var(--muted); font-size: .84em; line-height: 1.5; margin-bottom: 14px; }
+#war-role-sub b { color: var(--text); }
+#war-role-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.war-role-opt {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 11px 13px; border-radius: 11px; cursor: pointer;
+  background: var(--surface-3); border: 1px solid var(--border-soft); color: var(--text);
+  font-family: var(--font-ui); transition: border-color .15s, background .15s;
+}
+.war-role-opt:hover { border-color: var(--gold); background: var(--gold-soft); }
+.war-role-opt.current { border-color: rgba(214,164,90,0.45); }
+.war-role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; box-shadow: 0 0 8px currentColor; }
+.war-role-txt { display: flex; flex-direction: column; gap: 2px; }
+.war-role-txt b { font-weight: 700; font-size: .95em; }
+.war-role-txt i { font-style: normal; color: var(--muted); font-size: .78em; }
+#war-role-cancel { width: 100%; padding: 8px; cursor: pointer; }
+
+/* Пока открыт военный HUD, подсказка про зум уступает место вкладкам */
+#top-nav:has(#war-status-bar[style*="flex"]) #nav-hint { display: none; }
+
+/* ── Ночной запрет марша ──────────────────────────────── */
+.war-night-chip {
+  background: rgba(120,150,220,0.12) !important; border-color: rgba(120,150,220,0.35) !important;
+  color: #b9c8f0 !important; white-space: nowrap;
+}
+.troop-night {
+  margin: 8px 0; padding: 9px 11px; border-radius: 9px;
+  background: rgba(120,150,220,0.10); border: 1px solid rgba(120,150,220,0.3);
+  color: #b9c8f0; font-size: .82em; line-height: 1.5;
+}
+
+/* ── Передача города/замка во владение ───────────────── */
+.garr-own { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
+.garr-own-row { display: flex; align-items: center; gap: 6px; }
+.garr-own-row label { color: var(--muted); font-size: .8em; flex: none; }
+.garr-own-sel {
+  flex: 1; min-width: 0; background: #0c1014; border: 1px solid var(--border);
+  color: var(--text); border-radius: 8px; padding: 6px 8px; font-family: var(--font-ui); font-size: .85em;
+}
+.garr-own-sel:focus { border-color: var(--gold); outline: none; }
+.garr-own-save { padding: 6px 10px; cursor: pointer; flex: none; }
+.garr-own-wipe-l { display: flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--muted); font-size: .78em; cursor: pointer; }
+</style>
 
 </body>
 </html>
